@@ -18,6 +18,7 @@
   --r1:#e8590c; --r2:#7048e8; --r3:#0c8599; --r4:#c2255c; --r5:#2b8a3e;
   --t1:#cfe3dc; --t2:#9fd1b9; --t3:#f2c94c; --t4:#f08c00; --t5:#e03131; --t6:#7a0c0c;
   --c-am:#0b6e4f; --c-1:#2f6fb5; --c-2:#c98a00; --c-free:#b9c3ca;
+  --tf-0:#2f9e44; --tf-1:#f08c00; --tf-2:#e03131;
   --f-display:"Unbounded","Golos Text",system-ui,sans-serif;
   --f-body:"Golos Text",system-ui,-apple-system,"Segoe UI",sans-serif;
   --f-mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace;
@@ -31,6 +32,7 @@
   --r1:#ff8a3d; --r2:#9b84ff; --r3:#3bc9db; --r4:#f06595; --r5:#69db7c;
   --t1:#24413a; --t2:#2f6b55; --t3:#c9a227; --t4:#f08c00; --t5:#ff5c5c; --t6:#ffb3b3;
   --c-am:#3fbf8f; --c-1:#5c9ce6; --c-2:#e9b03b; --c-free:#4a5862;
+  --tf-0:#51cf66; --tf-1:#ffa94d; --tf-2:#ff6b6b;
   color-scheme:dark}}
 :root[data-theme="dark"]{
   --bg:#0f1519; --panel:#172027; --ink:#e6edf1; --muted:#93a3ae; --line:#2a3741; --soft:#1f2a32;
@@ -40,6 +42,7 @@
   --r1:#ff8a3d; --r2:#9b84ff; --r3:#3bc9db; --r4:#f06595; --r5:#69db7c;
   --t1:#24413a; --t2:#2f6b55; --t3:#c9a227; --t4:#f08c00; --t5:#ff5c5c; --t6:#ffb3b3;
   --c-am:#3fbf8f; --c-1:#5c9ce6; --c-2:#e9b03b; --c-free:#4a5862;
+  --tf-0:#51cf66; --tf-1:#ffa94d; --tf-2:#ff6b6b;
   color-scheme:dark}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
@@ -185,6 +188,9 @@ body.collapsed .collapse span{display:inline-block;transform:rotate(180deg)}
 .kpi .v.big{font-family:var(--f-display);font-weight:700;font-size:28px;color:var(--accent)}
 .kpi .s{font-size:12px;color:var(--muted)}
 .kpi.lead{grid-column:1/-1}
+.traf{display:flex;flex-direction:column;gap:5px;padding:9px 11px;border-radius:8px;background:var(--soft);font-size:12.5px}
+.traf .keys{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center}
+.traf .keys i{display:inline-block;width:18px;height:5px;border-radius:3px;margin-right:5px;vertical-align:2px}
 .simbar{display:flex;flex-direction:column;gap:8px;padding:0 16px 14px;border-bottom:1px solid var(--line)}
 .simbar .play{background:var(--accent);color:var(--accent-ink);border:0;border-radius:999px;padding:10px 16px;font-weight:600;white-space:nowrap;font-size:14px}
 .simbar .row{display:flex;gap:6px;flex-wrap:wrap}
@@ -794,6 +800,11 @@ function renderDetail(){
     const lab=g.cls<3?g.road:'—';
     const roads=g.cls===3?[...g.roads].slice(0,3).join(', '):'';
     return `<tr data-g="${gi}"><td class="n">${g.start.toFixed(0)}</td><td><span class="rb c${g.cls}">${esc(lab)}</span></td><td>${g.cls<3?esc(CLS_NAME[g.cls]):'нетаксуван'+(roads?' · '+esc(roads):'')}</td><td>${esc(g.near)}</td><td class="n">${g.km.toFixed(1)}</td><td class="n">${g.cls<3?x[g.cls][3].toFixed(2):'—'}</td><td class="n">${g.cls<3?fEur(g.toll):'—'}</td></tr>`;}).join('');
+  const L=routeLive(r);
+  const tlv=L.map(g=>trafLevel(g.c1h,r.pieces[pieceAt(r,g.km)[0]].h)),nb=[0,1,2].map(k=>tlv.filter(v=>v===k).length);
+  const trafBox=`<div class="traf"><div class="keys"><b>Трафик сега</b><span><i style="background:var(--tf-0)"></i>свободно</span><span><i style="background:var(--tf-1)"></i>натоварено</span><span><i style="background:var(--tf-2)"></i>много натоварено</span></div>`+
+    (!LIVE.groups.length?'<span class="tiny">Данните от БГТОЛ още не са заредени.</span>':!L.length?'<span class="tiny">По маршрута няма точки на преброяване на БГТОЛ.</span>':
+     `<span class="tiny">${L.length} точки по маршрута: ${nb[0]} свободни, ${nb[1]} натоварени, ${nb[2]} много натоварени. Най-много: ${esc(L.reduce((a,b)=>b.c1h>a.c1h?b:a).name)}, ${L.reduce((a,b)=>b.c1h>a.c1h?b:a).c1h.toLocaleString('bg-BG')}/ч. ${esc(fLiveTime(LIVE.time))}.</span>`)+'</div>';
   document.getElementById('kpibar').innerHTML=`
     <h2 style="color:var(${r.color})">${esc(r.names.join(' · '))}</h2>
     <div class="kpis">
@@ -801,8 +812,7 @@ function renderDetail(){
       <div class="kpi"><div class="v">${fKm(r.total)}</div><div class="s">общо · ${fKm(r.tolled)} таксувани</div></div>
       <div class="kpi"><div class="v">${fH(r.hours)}</div><div class="s">ориентировъчно време</div></div>
       <div class="kpi"><div class="v">${fEur0(r.toll*mult)}</div><div class="s">на месец · ${S.trips} курса${S.rt?' × 2':''}</div></div>
-    </div>`;
-  const L=liveOnRoute(r);
+    </div>${trafBox}`;
   const liveSum=!LIVE.groups.length?'няма заредени данни':!L.length?'няма точки на преброяване по маршрута':(()=>{const bz=L.reduce((a,b)=>b.c1h>a.c1h?b:a);return `${L.length} точки · най-натоварено ${bz.name}, ${bz.c1h.toLocaleString('bg-BG')}/ч`;})();
   const liveBody=!L.length?`<p class="note">${LIVE.groups.length?'По този маршрут няма точки на преброяване на БГТОЛ.':'Данните от БГТОЛ още не са заредени.'}</p>`:(()=>{const mx=Math.max(...L.map(g=>g.c1h),1),bz=L.reduce((a,b)=>b.c1h>a.c1h?b:a);
     return `<p class="note">${esc(fLiveTime(LIVE.time))}. Най-натоварено: ${esc(bz.name)}, ${bz.c1h.toLocaleString('bg-BG')} превозни средства за последния час, от тях ${bz.heavy.toLocaleString('bg-BG')} камиона.</p>
@@ -870,6 +880,11 @@ const NEIGH={ROU:['Румъния',26.0,44.35],SRB:['Сърбия',22.1,43.6],MK
 const TBINS=[50,150,400,1000,2000];
 function tbin(v){let i=0;while(i<TBINS.length&&v>=TBINS[i])i++;return i;}
 const BUBBLES=[];
+// live traffic along a route: counting points with their km on the route, cached per data snapshot
+function routeLive(r){if(r._lt!==LIVE.time||r._ln!==LIVE.groups.length){r._live=liveOnRoute(r);r._lt=LIVE.time;r._ln=LIVE.groups.length;}return r._live;}
+// 0 free, 1 busy, 2 heavy: vehicles per hour at the nearest counting point within 12 km; motorways carry twice as much
+function trafLevel(v,h){const f=h===0?2:1;return v<300*f?0:v<1000*f?1:2;}
+function trafAt(L,km){let best=12,g=null;for(const x of L){const d=Math.abs(x.km-km);if(d<best){best=d;g=x;}}return g;}
 function posAtKm(r,km){const [pi,acc]=pieceAt(r,km);const p=r.pieces[pi];return posIn(p,p.km?Math.max(0,Math.min(1,(km-acc)/p.km)):1);}
 let raf=0;function draw(){if(!raf)raf=requestAnimationFrame(()=>{raf=0;paint();});}
 function strokeEdges(filter,c=ctx){
@@ -977,6 +992,23 @@ function paint(){
     const line=()=>{c.beginPath();r.poly.forEach((p,k)=>{const [x,y]=toScr(p[0],p[1]);k?c.lineTo(x,y):c.moveTo(x,y);});};
     if(sel){line();c.strokeStyle=focus?css('--ink'):css('--panel');c.lineWidth=focus?11:10;c.globalAlpha=focus?.35:.85;c.stroke();c.globalAlpha=1;}
     line();c.strokeStyle=css(r.color);c.lineWidth=sel?(focus?7:5.5):3.5;c.globalAlpha=sel?1:.5;c.stroke();c.globalAlpha=1;
+    if(focus&&sel){
+      // traffic now: stretches near a counting point take its level's colour, like a navigation app
+      const L=routeLive(r);if(!L.length)continue;
+      const cols=[css('--tf-0'),css('--tf-1'),css('--tf-2')];let cum=0,cur=null;c.lineWidth=7;
+      for(const p of r.pieces){const g=p.edge>=0?trafAt(L,cum+p.km/2):null;cum+=p.km;
+        const col=g?cols[trafLevel(g.c1h,p.h)]:null;
+        if(col!==cur){if(cur)c.stroke();cur=col;if(col){c.strokeStyle=col;c.beginPath();const [x,y]=toScr(p.pts[0][0],p.pts[0][1]);c.moveTo(x,y);}}
+        if(col)for(const q of p.pts){const [x,y]=toScr(q[0],q[1]);c.lineTo(x,y);}}
+      if(cur)c.stroke();
+      // the counting points themselves, with vehicles per hour
+      c.textAlign='center';c.textBaseline='middle';const taken=[];
+      for(const g of L){const [x,y]=toScr(g.lon,g.lat);if(x<-20||y<-20||x>V.w+20||y>V.h+20)continue;
+        const p=r.pieces[pieceAt(r,g.km)[0]];c.beginPath();c.arc(x,y,5.5,0,7);c.fillStyle=cols[trafLevel(g.c1h,p.h)];c.fill();c.lineWidth=2;c.strokeStyle=css('--panel');c.stroke();
+        if(V.s>350&&!taken.some(([a,b])=>Math.abs(a-x)<60&&Math.abs(b-y)<16)){taken.push([x,y]);const t=g.c1h.toLocaleString('bg-BG')+'/ч';
+          c.font='600 10.5px '+css('--f-mono');c.lineWidth=3;c.strokeStyle=css('--label-halo');c.strokeText(t,x,y+14);c.fillStyle=css('--ink');c.fillText(t,x,y+14);}}
+      c.textAlign='left';
+    }
   }
   // travelled part during simulation
   if(SIM.pos&&SIM.trail.length>1){c.beginPath();SIM.trail.forEach((p,k)=>{const [x,y]=toScr(p[0],p[1]);k?c.lineTo(x,y):c.moveTo(x,y);});c.strokeStyle=css('--ink');c.lineWidth=3;c.setLineDash([2,6]);c.stroke();c.setLineDash([]);}
