@@ -1,0 +1,27 @@
+name: Обнови трафика
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+  push:
+    paths: ["incidents.json"]
+permissions:
+  contents: write
+concurrency:
+  group: live
+  cancel-in-progress: false
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tools/update_live.py
+      - name: Commit road_live.js
+        run: |
+          git config user.name "tol-bot"
+          git config user.email "tol-bot@users.noreply.github.com"
+          git add road_live.js
+          git diff --cached --quiet && exit 0
+          git commit -m "Трафик и пътна обстановка $(date -u +%H:%M)"
+          git pull --rebase origin main
+          git push
