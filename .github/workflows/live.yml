@@ -15,13 +15,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: python3 tools/update_live.py
-      - name: Commit road_live.js
+      - name: Update and commit road_live.js
         run: |
           git config user.name "tol-bot"
           git config user.email "tol-bot@users.noreply.github.com"
-          git add road_live.js
-          git diff --cached --quiet && exit 0
-          git commit -m "Трафик и пътна обстановка $(date -u +%H:%M)"
-          git pull --rebase origin main
-          git push
+          # another run may have pushed meanwhile: start from the newest main and retry
+          for i in 1 2 3; do
+            git fetch -q origin main && git reset -q --hard origin/main
+            python3 tools/update_live.py
+            git add road_live.js
+            git diff --cached --quiet && exit 0
+            git commit -q -m "Трафик и пътна обстановка $(date -u +%H:%M)"
+            git push -q origin HEAD:main && exit 0
+            sleep 5
+          done
+          exit 1
