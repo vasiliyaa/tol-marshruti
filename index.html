@@ -294,8 +294,8 @@ tr.now td{background:var(--soft)}
     </div>
     <div class="mtools">
       <div class="seg" id="layer" role="group" aria-label="Слой">
-        <button type="button" data-v="roads" aria-pressed="true">Пътища</button>
-        <button type="button" data-v="live" aria-pressed="false">Трафик сега</button>
+        <button type="button" data-v="live" aria-pressed="true">Обстановка</button>
+        <button type="button" data-v="roads" aria-pressed="false">Тол пътища</button>
               </div>
       <div class="zoom float"><button type="button" id="zin" aria-label="Приближи">+</button><button type="button" id="zout" aria-label="Отдалечи">−</button><button type="button" id="zfit" aria-label="Покажи целия маршрут" title="Покажи целия маршрут" style="font-size:14px">⤢</button></div>
     </div>
@@ -528,7 +528,7 @@ const S={
   from:findPlace('София'), via:null, to:findPlace('Варна'),
   cat:2, co2:1, euro:'VI', tariff:'current', vw:40, vh:4, va:10, obey:true, view:'list',
   opc:.45, tc:20, trips:20, rt:false,
-  routes:[], sel:0, layer:'roads', pick:null, hover:-1, speed:1, follow:true, avoid:true
+  routes:[], sel:0, layer:'live', pick:null, hover:-1, speed:1, follow:true, avoid:true
 };
 // typical gross weight (t) and height (m) per category; both can be changed in the vehicle panel
 const VDEF={0:[12,3.8,8],1:[26,4,11.5],2:[40,4,10],3:[12,3.3,7],4:[19,3.7,11]};
@@ -569,9 +569,13 @@ function euroOptions(){
 // ---------- road incidents ----------
 // Effects per edge: bit 1 closed for all, bit 2 closed for trucks over 12 t; extra hours; slowdown factor.
 const eBlock=new Uint8Array(E),eDelay=new Float64Array(E),eSlow=new Float32Array(E).fill(1),eInc=new Map();
-const INC={list:[],db:null,canWrite:false,pending:null};
+const INC={list:[],db:null,canWrite:false,pending:null,sel:-1},INC_HIT=[]; // INC_HIT: pins drawn last frame [index, x, y]
 const INC_NAME={closed:'Затворен път',accident:'Катастрофа / инцидент',works:'Ремонт, бавно движение',truckban:'Забрана за камиони над 12 т'};
 const INC_ICON={closed:'✕',accident:'!',works:'⚒',truckban:'12т'};
+const INC_COL={closed:'--bad',accident:'--warn',works:'--c-2',truckban:'--c-1'};
+// short text next to a pin: the delay, or what the event does
+function incLabel(x){if(x.type==='closed')return 'затворен';if(x.type==='truckban')return 'над 12 т';
+  const d=x.type==='accident'?(x.delay||20):(x.delay||0);return d?'+'+d+' мин':'бавно';}
 const todayStr=(()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');})();
 function incActive(x){
   if(x.off)return false;
@@ -985,7 +989,15 @@ function paintBase(c){
   const vis=i=>ebx[4*i+2]>=lon0&&ebx[4*i]<=lon1&&ebx[4*i+3]>=lat0&&ebx[4*i+1]<=lat1;
   const z=Math.max(.55,Math.min(3.2,V.s/150));
   const showLinks=V.s>900, showIII=true;
-  if(S.layer!=='traffic'){
+  if(S.layer==='live'){
+    // muted road network with the live load on top, like a navigation app
+    c.strokeStyle=css('--road-3');c.lineWidth=Math.max(.5,.45*z);c.beginPath();strokeEdges(i=>vis(i)&&eh[i]>=3&&(eh[i]===3||showLinks),c);c.stroke();
+    c.strokeStyle=css('--road-free');c.lineWidth=.9*z;c.beginPath();strokeEdges(i=>vis(i)&&eh[i]<3,c);c.stroke();
+    if(LIVE.eg){const cols=['--tf-0','--tf-1','--tf-2'].map(css);c.lineCap='round';
+      for(let lv=0;lv<3;lv++){c.strokeStyle=cols[lv];c.lineWidth=(1.5+lv*.9)*z;c.beginPath();
+        strokeEdges(i=>LIVE.eg[i]>=0&&vis(i)&&trafLevel(LIVE.groups[LIVE.eg[i]].c1h,eh[i])===lv,c);c.stroke();}
+      c.lineCap='butt';}
+  }else if(S.layer!=='traffic'){
     const layers=[
       [i=>(eh[i]===3||(eh[i]===4&&showLinks))&&tollCls(i)===3,css('--road-3'),Math.max(.5,.45*z)],
       [i=>eh[i]<3&&tollCls(i)===3,css('--road-free'),.9*z],
@@ -1002,8 +1014,11 @@ function paintBase(c){
   // roads closed to the chosen vehicle, once zoomed in
   if(S.obey&&V.s>600&&S.layer==='roads'){c.strokeStyle=css('--bad');c.lineWidth=Math.max(1.5,1.1*z);c.setLineDash([4,4]);c.globalAlpha=.8;c.beginPath();strokeEdges(i=>eRes[i]===1&&vis(i),c);c.stroke();c.setLineDash([]);c.globalAlpha=1;}
   // incidents: affected roads
-  for(const x of INC.list){if(!x.active)continue;
-    c.beginPath();strokeEdges(i=>x.edges.includes(i),c);c.strokeStyle=css(x.type==='accident'?'--warn':x.type==='works'?'--c-2':'--bad');c.lineWidth=7;c.globalAlpha=.55;c.stroke();c.globalAlpha=1;}
+  // closed and banned stretches dashed, roadworks striped, accidents solid
+  for(const x of INC.list){if(!x.active||!x.edges.length)continue;const es=new Set(x.edges),w=Math.max(4,2.4*z);
+    c.beginPath();strokeEdges(i=>es.has(i),c);c.lineCap='round';
+    c.strokeStyle=css('--panel');c.lineWidth=w+3;c.stroke();c.strokeStyle=css(INC_COL[x.type]);c.lineWidth=w;c.stroke();c.lineCap='butt';
+    if(x.type!=='accident'){c.setLineDash(x.type==='works'?[w*.5,w*1.3]:[w*1.4,w]);c.strokeStyle='#fff';c.lineWidth=w*.4;c.stroke();c.setLineDash([]);}}
 }
 let crispT=0;
 function scheduleCrisp(){clearTimeout(crispT);crispT=setTimeout(()=>{if(ptrs.size||ANIM.raf){scheduleCrisp();return;}BV.valid=false;draw();},180);}
@@ -1029,7 +1044,9 @@ function paint(){
     const r=S.routes[i],sel=i===S.sel;
     const line=()=>{c.beginPath();r.poly.forEach((p,k)=>{const [x,y]=toScr(p[0],p[1]);k?c.lineTo(x,y):c.moveTo(x,y);});};
     if(sel){line();c.strokeStyle=focus?css('--ink'):css('--panel');c.lineWidth=focus?11:10;c.globalAlpha=focus?.35:.85;c.stroke();c.globalAlpha=1;}
-    line();c.strokeStyle=css(r.color);c.lineWidth=sel?(focus?7:5.5):3.5;c.globalAlpha=sel?1:.5;c.stroke();c.globalAlpha=1;
+    // over the live load the other variants are dotted, so their colours do not read as traffic
+    const dot=!sel&&S.layer==='live';if(dot)c.setLineDash([1,7]);
+    line();c.strokeStyle=css(r.color);c.lineWidth=sel?(focus?7:5.5):dot?4.5:3.5;c.globalAlpha=sel||dot?1:.5;c.stroke();c.globalAlpha=1;c.setLineDash([]);
     if(focus&&sel){
       // traffic now: stretches near a counting point take its level's colour, like a navigation app
       const L=routeLive(r);if(!L.length)continue;
@@ -1052,13 +1069,14 @@ function paint(){
   if(SIM.pos&&SIM.trail.length>1){c.beginPath();SIM.trail.forEach((p,k)=>{const [x,y]=toScr(p[0],p[1]);k?c.lineTo(x,y):c.moveTo(x,y);});c.strokeStyle=css('--ink');c.lineWidth=3;c.setLineDash([2,6]);c.stroke();c.setLineDash([]);}
   if(S.hover>=0){c.beginPath();strokeEdges(i=>i===S.hover);c.strokeStyle=css('--ink');c.lineWidth=6;c.globalAlpha=.6;c.stroke();c.globalAlpha=1;}
   // live counting points
-  if(S.layer==='live'&&LIVE.pts.length){
-    const cols=['--t1','--t2','--t3','--t4','--t5','--t6'].map(css);
+  // the counting points themselves only once zoomed in; further out the coloured roads say it
+  if(S.layer==='live'&&LIVE.pts.length&&V.s>320){
+    const tcols=['--tf-0','--tf-1','--tf-2'].map(css);
     for(const g of LIVE.groups){
       if(g.lon<lon0||g.lon>lon1||g.lat<lat0||g.lat>lat1)continue;
-      const [x,y]=toScr(g.lon,g.lat);const r=Math.max(4,Math.min(16,3+Math.sqrt(g.c1h)/3))*Math.min(1.4,Math.max(.8,V.s/300));
-      c.beginPath();c.arc(x,y,r,0,7);c.fillStyle=cols[lbin(g.c1h)];c.globalAlpha=.9;c.fill();c.globalAlpha=1;
-      c.lineWidth=g===LIVE.hover?3:1.2;c.strokeStyle=css('--ink');c.stroke();
+      const [x,y]=toScr(g.lon,g.lat);const r=V.s>700?6:4.5;
+      c.beginPath();c.arc(x,y,r,0,7);c.fillStyle=css('--panel');c.fill();
+      c.lineWidth=g===LIVE.hover?3.5:2.2;c.strokeStyle=tcols[g.lv||0];c.stroke();
       if(V.s>700){c.font='600 10.5px '+css('--f-mono');c.textAlign='center';c.textBaseline='middle';c.lineWidth=3;c.strokeStyle=css('--label-halo');
         const tx=String(g.c1h);c.strokeText(tx,x,y-r-8);c.fillStyle=css('--ink');c.fillText(tx,x,y-r-8);c.textAlign='left';}
     }
@@ -1110,13 +1128,21 @@ function paint(){
     c.fillStyle=css(col);c.beginPath();c.arc(x,y-15,11,0,7);c.fill();c.beginPath();c.moveTo(x-6,y-8);c.lineTo(x,y);c.lineTo(x+6,y-8);c.fill();
     c.fillStyle=l==='Б'?css('--panel'):'#fff';c.font='600 11.5px '+css('--f-body');c.textAlign='center';c.fillText(l,x,y-15);c.textAlign='left';}
   const onRoute=focus?new Set(S.routes[S.sel].hit):null;
+  INC_HIT.length=0;
   for(const [k,x] of INC.list.entries()){
     if(onRoute&&!onRoute.has(k))continue;
-    const [ix,iy]=toScr(x.lon,x.lat);if(ix<-30||iy<-30||ix>V.w+30||iy>V.h+30)continue;
-    const col=css(x.type==='accident'?'--warn':x.type==='works'?'--c-2':'--bad');
-    c.globalAlpha=x.active?1:.45;c.fillStyle=col;c.strokeStyle=css('--panel');c.lineWidth=2;
-    c.beginPath();c.moveTo(ix,iy-24);c.lineTo(ix+12,iy-3);c.lineTo(ix-12,iy-3);c.closePath();c.fill();c.stroke();
-    c.fillStyle='#fff';c.font='700 '+(x.type==='truckban'?'8px ':'11px ')+css('--f-body');c.textAlign='center';c.fillText(INC_ICON[x.type]||'!',ix,iy-10);c.textAlign='left';c.globalAlpha=1;}
+    const [ix,iy]=toScr(x.lon,x.lat);if(ix<-40||iy<-50||ix>V.w+120||iy>V.h+30)continue;
+    const col=css(INC_COL[x.type]),R=12,cy=iy-R-9;
+    c.globalAlpha=x.active?1:.45;
+    c.fillStyle=css('--panel');c.beginPath();c.arc(ix,cy,R+2.5,0,7);c.fill();c.beginPath();c.moveTo(ix-7,cy+R-1);c.lineTo(ix,iy+1);c.lineTo(ix+7,cy+R-1);c.fill();
+    c.fillStyle=col;c.beginPath();c.arc(ix,cy,R,0,7);c.fill();c.beginPath();c.moveTo(ix-5,cy+R-3);c.lineTo(ix,iy-2);c.lineTo(ix+5,cy+R-3);c.fill();
+    if(INC.sel===k){c.strokeStyle=css('--ink');c.lineWidth=2;c.beginPath();c.arc(ix,cy,R+5,0,7);c.stroke();}
+    c.fillStyle='#fff';c.font='700 '+(x.type==='truckban'?'8.5px ':'12px ')+css('--f-body');c.textAlign='center';c.fillText(INC_ICON[x.type]||'!',ix,cy+4);c.textAlign='left';
+    const lab=x.active?incLabel(x):'';
+    if(lab&&(V.s>220||onRoute||INC.sel===k)){c.font='600 11px '+css('--f-mono');const tw=c.measureText(lab).width+12,px=ix+R+5,py=cy-9;
+      c.fillStyle=css('--panel');c.strokeStyle=col;c.lineWidth=1.5;c.beginPath();c.roundRect(px,py,tw,18,9);c.fill();c.stroke();
+      c.fillStyle=css('--ink');c.fillText(lab,px+6,py+13);}
+    c.globalAlpha=1;INC_HIT.push([k,ix,cy]);}
   // toll payment markers + vehicle
   if(SIM.pos){
     c.font='600 12px '+css('--f-mono');
@@ -1131,8 +1157,14 @@ function paint(){
 document.getElementById('legbtn').onclick=()=>{const l=document.getElementById('legend'),b=document.getElementById('legbtn');l.hidden=!l.hidden;b.setAttribute('aria-expanded',!l.hidden);b.textContent=l.hidden?'Легенда ▴':'Легенда ▾';};
 function legend(){
   const el=document.getElementById('legend');
-  if(S.layer==='live'){el.innerHTML=`<div>Превозни средства за последния час</div><div class="ramp">${[1,2,3,4,5,6].map(i=>`<span style="background:var(--t${i})"></span>`).join('')}</div>
-    <div class="rl"><span>0</span><span>100</span><span>300</span><span>600</span><span>1k</span><span>1,5k+</span></div><div class="tiny" id="live-age">${LIVE.time?'Данни от '+fLiveTime(LIVE.time):'Няма заредени данни'}</div>`;return;}
+  if(S.layer==='live'){el.innerHTML=`<div>Натоварване по преброяване на БГТОЛ</div>
+    <div class="li"><span class="sw" style="border-top-color:var(--tf-0);border-top-width:3px"></span>свободно</div>
+    <div class="li"><span class="sw" style="border-top-color:var(--tf-1);border-top-width:4px"></span>натоварено</div>
+    <div class="li"><span class="sw" style="border-top-color:var(--tf-2);border-top-width:5px"></span>много натоварено</div>
+    <div class="li"><span class="sw" style="border-top:4px dashed var(--bad)"></span>затворен път</div>
+    <div class="li"><span class="sw" style="border-top:4px dotted var(--c-2)"></span>ремонт, бавно движение</div>
+    <div class="li"><span class="sw" style="border-top-color:var(--warn);border-top-width:4px"></span>катастрофа</div>
+    <div class="tiny" id="live-age">${LIVE.time?'Данни от '+fLiveTime(LIVE.time):'Няма заредени данни'} · натиснете знак за подробности</div>`;return;}
   el.innerHTML=S.layer==='roads'?`
     <div class="li"><span class="sw" style="border-top-color:var(--road-am);border-top-width:4px"></span>Магистрала, таксувана</div>
     <div class="li"><span class="sw" style="border-top-color:var(--road-1);border-top-width:3px"></span>Път I клас, таксуван</div>
@@ -1203,7 +1235,8 @@ cv.addEventListener('pointermove',ev=>{
     const now=performance.now(),dtm=Math.max(1,now-drag.lt);
     drag.svx=drag.svx*0.6+0.4*(ev.offsetX-drag.lx)/dtm;drag.svy=drag.svy*0.6+0.4*(ev.offsetY-drag.ly)/dtm;drag.lx=ev.offsetX;drag.ly=ev.offsetY;drag.lt=now;
     if(moved){V.x=drag.vx-dx/V.s;V.y=drag.vy-dy/V.s;tip.hidden=true;if(SIM.on&&S.follow){setFollow(false);}draw();}return;}
-  if(ev.pointerType==='mouse'&&S.layer==='live'){const g=liveAt(ev.offsetX,ev.offsetY);if(g!==LIVE.hover){LIVE.hover=g;draw();}if(g){liveTip(g,ev.offsetX,ev.offsetY);return;}}
+  if(ev.pointerType==='mouse'){const k=incAt(ev.offsetX,ev.offsetY);if(k>=0){cv.style.cursor='pointer';if(S.hover>=0){S.hover=-1;draw();}incTip(k,ev.offsetX,ev.offsetY);return;}cv.style.cursor=S.pick?'crosshair':'grab';}
+  if(ev.pointerType==='mouse'&&S.layer==='live'&&V.s>320){const g=liveAt(ev.offsetX,ev.offsetY);if(g!==LIVE.hover){LIVE.hover=g;draw();}if(g){liveTip(g,ev.offsetX,ev.offsetY);return;}}
   if(ev.pointerType==='mouse'&&!SIM.on){const i=nearestEdge(ev.offsetX,ev.offsetY,7);if(i!==S.hover){S.hover=i;draw();}showTip(i,ev.offsetX,ev.offsetY);}
 });
 function endPtr(ev){const was=ptrs.has(ev.pointerId);ptrs.delete(ev.pointerId);if(ptrs.size<2)pinch=null;
@@ -1243,7 +1276,8 @@ function clickAt(sx,sy,ptype){
     document.getElementById('if-where').textContent=(INC.pending.road?INC.pending.road+' · ':'')+pointName(lon,lat);
     document.getElementById('incform').hidden=false;document.getElementById('if-note').focus();draw();return;}
   if(S.pick){const [lon,lat]=toWorld(sx,sy);S[S.pick]={name:pointName(lon,lat),lon,lat};const k=S.pick;setPick(null);syncInputs();computeRoutes();return;}
-  if(S.layer==='live'){const g=liveAt(sx,sy);if(g){LIVE.hover=g;liveTip(g,sx,sy);draw();return;}}
+  {const k=incAt(sx,sy);if(k>=0){INC.sel=k;incTip(k,sx,sy);draw();return;}if(INC.sel>=0){INC.sel=-1;tip.hidden=true;}}
+  if(S.layer==='live'&&V.s>320){const g=liveAt(sx,sy);if(g){LIVE.hover=g;liveTip(g,sx,sy);draw();return;}}
   if(ptype!=='mouse'&&!SIM.on){const i=nearestEdge(sx,sy,14);showTip(i,sx,sy);S.hover=i;}
   for(let k=BUBBLES.length-1;k>=0;k--){const b=BUBBLES[k];if(b.ri>=0&&sx>=b.x0&&sx<=b.x1&&sy>=b.y0&&sy<=b.y1){if(b.ri!==S.sel){S.sel=b.ri;stopSim();renderCards();renderDetail();renderStrip();}draw();return;}}
   if(S.view==='route'){draw();return;}
@@ -1433,14 +1467,50 @@ function setLive(doc){
   for(const p of LIVE.pts){const base=Math.floor(p[0]/10),dir=p[0]%10;let x=g.get(base);
     if(!x)g.set(base,x={base,name:p[3],lon:p[1],lat:p[2],c15:0,c1h:0,light:0,heavy:0,bus:0,dirs:{}});
     x.c15+=p[4];x.c1h+=p[5];x.light+=p[6];x.heavy+=p[7];x.bus+=p[8];x.dirs[dir]=p[5];}
-  LIVE.groups=[...g.values()];
-  legend();renderDetail();draw();
+  LIVE.groups=[...g.values()];liveEdges();
+  legend();renderDetail();invalidateBase();
+}
+// both ends of every edge, for walking along a road in either direction
+let NE=null;
+function nodeEdges(){if(NE)return NE;const c=new Int32Array(N+1);for(let i=0;i<E;i++){c[ea[i]+1]++;c[eb[i]+1]++;}
+  for(let i=0;i<N;i++)c[i+1]+=c[i];const l=new Int32Array(2*E),f=c.slice(0,N);for(let i=0;i<E;i++){l[f[ea[i]]++]=i;l[f[eb[i]]++]=i;}return NE={c,l};}
+// each main road stretch takes the load of the nearest BGTOLL counting point on the same road (same number,
+// or same name where it has none), up to 15 km along the road, both carriageways
+function liveEdges(){
+  const eg=new Int32Array(E).fill(-1),ed=new Float32Array(E).fill(1e9),{c:nc,l:nl}=nodeEdges();
+  const X=lon=>lon*KX*111.32,Y=lat=>lat*110.57;
+  LIVE.groups.forEach((g,gi)=>{
+    const cand=new Map();
+    for(const [d,n] of nearNodes(g.lon,g.lat,3,40))for(let p=nc[n];p<nc[n+1];p++){const i=nl[p];if(eh[i]>2||cand.has(i))continue;
+      let b=9;for(let q=geoOff[i]+1;q<geoOff[i+1];q++)b=Math.min(b,segDist(X(g.lon),Y(g.lat),X(GX[q-1]),Y(GY[q-1]),X(GX[q]),Y(GY[q])));cand.set(i,b);}
+    if(!cand.size)return;
+    const best=Math.min(...cand.values());if(best>1)return;
+    const s0=[...cand.entries()].find(([i,b])=>b===best)[0];
+    const same=i=>eh[i]<=2&&eref[i]===eref[s0]&&(D.refs[eref[s0]]||ename[i]===ename[s0]);
+    const dist=new Map(),q=[];
+    for(const [i,b] of cand)if(b<best+0.35&&same(i)){dist.set(i,0);q.push([0,i]);}
+    g.lv=trafLevel(g.c1h,eh[s0]);
+    while(q.length){q.sort((a,b)=>b[0]-a[0]);const [c0,i]=q.pop();if(c0>dist.get(i))continue;
+      if(c0<ed[i]){ed[i]=c0;eg[i]=gi;}
+      for(const n of [ea[i],eb[i]])for(let p=nc[n];p<nc[n+1];p++){const j=nl[p];if(!same(j))continue;const d=c0+elen[j];
+        if(d<15&&d<(dist.has(j)?dist.get(j):1e9)){dist.set(j,d);q.push([d,j]);}}}
+  });
+  LIVE.eg=eg;
 }
 function liveTip(g,sx,sy){
   const d=Object.entries(g.dirs).map(([k,v])=>`посока ${k}: <span class="mono">${v}</span>`).join(' · ');
   tip.innerHTML=`<b>${esc(g.name)}</b> · точка на БГТОЛ<br><span class="mono">${g.c1h.toLocaleString('bg-BG')}</span> превозни средства за последния час<br><span class="mono">${g.c15}</span> за последните 15 мин<br><span class="k">Леки</span> <span class="mono">${g.light}</span> · <span class="k">камиони</span> <span class="mono">${g.heavy}</span> · <span class="k">автобуси</span> <span class="mono">${g.bus}</span><br>${d}<br><span class="k">${esc(fLiveTime(LIVE.time))}</span>`;
   tip.hidden=false;const tw=tip.offsetWidth,th=tip.offsetHeight;
   tip.style.left=Math.max(4,Math.min(sx+14,V.w-tw-8))+'px';tip.style.top=(sy+14+th>V.h?sy-th-10:sy+14)+'px';
+}
+function incAt(sx,sy){let best=17,bk=-1;for(const [k,x,y] of INC_HIT){const d=Math.hypot(x-sx,y-sy);if(d<best){best=d;bk=k;}}return bk;}
+function incTip(k,sx,sy){const x=INC.list[k];if(!x){tip.hidden=true;return;}
+  const dd=d=>d.slice(8,10)+'.'+d.slice(5,7);
+  const when=Array.isArray(x.days)&&x.days.length?'в сила '+x.days.map(dd).join(', '):x.until?'до '+dd(x.until):'';
+  tip.innerHTML=`<b>${esc(x.title||INC_NAME[x.type])}</b><br><span class="k">${esc(INC_NAME[x.type])}${x.road?' · '+esc(x.road):''}</span>${x.active?' · <span class="mono">'+esc(incLabel(x))+'</span>':' · <span class="k">не е активно днес</span>'}`+
+    (x.note?`<br>${esc(x.note)}`:'')+`<br><span class="k">${esc([x.time,when,x.source].filter(Boolean).join(' · '))}</span>`;
+  tip.hidden=false;const tw=tip.offsetWidth,th=tip.offsetHeight;
+  tip.style.left=Math.max(4,Math.min(sx+14,V.w-tw-8))+'px';tip.style.top=(sy+14+th>V.h?Math.max(4,sy-th-10):sy+14)+'px';
 }
 function liveAt(sx,sy){let best=14,bg=null;for(const g of LIVE.groups){const [x,y]=toScr(g.lon,g.lat);const d=Math.hypot(x-sx,y-sy);if(d<best){best=d;bg=g;}}return bg;}
 function liveOnRoute(r){
@@ -1486,7 +1556,7 @@ function renderInc(){
   el.innerHTML=sorted.map(({x,k})=>`<div class="inci${x.active?'':' off'}"><span class="ico ${x.type}">${INC_ICON[x.type]||'!'}</span>
     <button type="button" class="go" data-k="${k}"><b>${esc(x.road?x.road+' · ':'')}${esc(x.title||INC_NAME[x.type]||'')}</b><small>${esc(x.note||'')}</small><small>${esc(INC_NAME[x.type]||'')}${x.type==='accident'?' · +'+(x.delay||20)+' мин':''}${x.active?'':' · не важи днес'}${x.time?' · '+esc(x.time):''}</small></button>
     ${INC.canWrite?`<button type="button" class="xbtn" data-del="${esc(x.id)}" aria-label="Премахни">×</button>`:'<span></span>'}</div>`).join('');
-  el.querySelectorAll('.go').forEach(b=>b.onclick=()=>{const x=INC.list[+b.dataset.k];if(SIM.on)setFollow(false);V.s=Math.max(V.s,2500);centerOn(wx(x.lon),wy(x.lat));if(isPhone())setSheet('min');draw();});
+  el.querySelectorAll('.go').forEach(b=>b.onclick=()=>{const x=INC.list[+b.dataset.k];INC.sel=+b.dataset.k;if(SIM.on)setFollow(false);V.s=Math.max(V.s,2500);centerOn(wx(x.lon),wy(x.lat));if(isPhone())setSheet('min');draw();});
   el.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{try{await INC.db.collection('incidents').doc(b.dataset.del).delete();}catch(e){}});
 }
 document.getElementById('avoid').onchange=e=>{S.avoid=e.target.checked;computeRoutes();};
