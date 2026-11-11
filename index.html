@@ -1032,6 +1032,7 @@ function paintBase(c){
 }
 function scheduleCrisp(){clearTimeout(crispT);crispT=setTimeout(()=>{if(ptrs.size||ANIM.raf||moving()){scheduleCrisp();return;}BV.valid=false;draw();},180);}
 function paint(){
+  if(!(V.w>0&&V.h>0))return; // hidden or collapsed: nothing to draw until the next resize
   const c=ctx;cssCache=null;clampView();
   if(V.x!==PV.x||V.y!==PV.y||V.s!==PV.s){PV.x=V.x;PV.y=V.y;PV.s=V.s;lastMove=performance.now();}
   let k=V.s/BV.s;
