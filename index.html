@@ -438,6 +438,10 @@ const GX=new Float64Array(geoPts),GY=new Float64Array(geoPts);
   GX[p]=NX[e[1]];GY[p]=NY[e[1]];p++;}
  geoOff[E]=p;}
 D.E=null;
+// map geometry as paths in world units (lon*KX, -lat), built once per selection and reused at every zoom;
+// selections that depend on live data carry a prefix and are dropped when that data changes
+const PATHS=new Map();
+const dropPaths=pre=>{for(const k of [...PATHS.keys()])if(k.startsWith(pre))PATHS.delete(k);};
 // truck and bus restrictions from OpenStreetMap: limits in tonnes and metres;
 // flags 1 trucks prohibited, 2 trucks for access only, 4 closed to motor vehicles, 8 access only, 16 buses prohibited
 const rW=new Float32Array(E),rWH=new Float32Array(E),rH=new Float32Array(E),rL=new Float32Array(E),rF=new Uint8Array(E),rA=new Float32Array(E);
@@ -450,6 +454,7 @@ const ZONES=(D.Z||[]).map(z=>({name:z[0],t:z[1]})),rZ=new Uint8Array(E);
 const TURNS=D.U||[];D.U=null;
 const T=D.T; // [road, class, id, lenM, declMonth, amountMonth, name]
 const PL=D.P.map(p=>({name:p[0],type:p[1],pop:p[2],lon:p[3]/1e5,lat:p[4]/1e5}));
+const PL_ORDER=PL.map((p,i)=>i).sort((a,b)=>PL[a].type-PL[b].type||PL[b].pop-PL[a].pop);
 const PREF=['гр.','гр.','с.'];
 const pname=p=>PREF[p.type]+' '+p.name;
 const ST=D.S.map(s=>({name:s[0],pl:s[1],lon:s[2]/1e5,lat:s[3]/1e5}));
@@ -553,6 +558,7 @@ const eRes=new Uint8Array(E);
 // incoming directed edge is edge*2+dir and dir 0 means it was driven ea→eb
 let BANT=new Set();
 function applyRestrictions(){
+  dropPaths('res');
   for(let i=0;i<E;i++)eRes[i]=restrWhy(i)?1:((rF[i]&8)||(!isBus()&&(rF[i]&2)))?2:0;
   BANT=new Set();const bit=isBus()?2:1;
   if(S.obey)for(const [v,a,b,only,ap] of TURNS){if(!(ap&bit))continue;const k=(a*2+(eb[a]===v?0:1))*E;
@@ -585,6 +591,7 @@ function incActive(x){
 }
 const heavy=()=>S.cat===1||S.cat===2;
 function applyIncidents(){
+  dropPaths('inc');
   eBlock.fill(0);eDelay.fill(0);eSlow.fill(1);eInc.clear();
   INC.list.forEach((x,k)=>{
     x.active=incActive(x);x.edges=[];
@@ -937,6 +944,15 @@ function strokeEdges(filter,c=ctx){
     for(let p=a+1;p<b;p++){[x,y]=toScr(GX[p],GY[p]);c.lineTo(x,y);}
   }
 }
+function worldPath(key,filter){let p=PATHS.get(key);if(p)return p;p=new Path2D();
+  for(let i=0;i<E;i++){if(!filter(i))continue;const a=geoOff[i],b=geoOff[i+1];p.moveTo(GX[a]*KX,-GY[a]);for(let q=a+1;q<b;q++)p.lineTo(GX[q]*KX,-GY[q]);}
+  PATHS.set(key,p);return p;}
+function ringsPath(key,rings,close){let p=PATHS.get(key);if(p)return p;p=new Path2D();
+  for(const r of rings){r.forEach((q,k)=>k?p.lineTo(q[0]*KX,-q[1]):p.moveTo(q[0]*KX,-q[1]));if(close)p.closePath();}PATHS.set(key,p);return p;}
+// draws a world path with widths and dashes given in screen pixels
+function inWorld(c,fn){c.save();c.setTransform(V.dpr*V.s,0,0,V.dpr*V.s,V.dpr*(V.w/2-V.x*V.s),V.dpr*(V.h/2-V.y*V.s));try{fn(1/V.s);}finally{c.restore();}}
+function strokeWorld(c,path,col,w,dash){inWorld(c,u=>{c.strokeStyle=col;c.lineWidth=w*u;if(dash)c.setLineDash(dash.map(d=>d*u));c.stroke(path);});}
+function strokeRoads(c,key,filter,col,w,dash){strokeWorld(c,worldPath(key,filter),col,w,dash);}
 // visible bbox culling per edge
 let ebx=null;
 function buildBoxes(){ebx=new Float32Array(E*4);for(let i=0;i<E;i++){let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;for(let p=geoOff[i];p<geoOff[i+1];p++){x0=Math.min(x0,GX[p]);x1=Math.max(x1,GX[p]);y0=Math.min(y0,GY[p]);y1=Math.max(y1,GY[p]);}ebx[4*i]=x0;ebx[4*i+1]=y0;ebx[4*i+2]=x1;ebx[4*i+3]=y1;}}
@@ -955,77 +971,66 @@ function clampView(){
 const baseCv=document.createElement('canvas'),bctx=baseCv.getContext('2d');
 const BV={x:0,y:0,s:1,w:0,h:0,valid:false};
 const MARGIN=0.35;
+// the view of the last frame and when it last changed, so the map is redrawn crisp only once it rests
+let crispT=0,lastMove=0;const PV={x:0,y:0,s:0};
+const moving=()=>performance.now()-lastMove<220;
 function invalidateBase(){BV.valid=false;draw();}
 function renderBase(){
-  const bw=V.w*(1+2*MARGIN),bh=V.h*(1+2*MARGIN);
-  baseCv.width=Math.round(bw*V.dpr);baseCv.height=Math.round(bh*V.dpr);
-  Object.assign(BV,{x:V.x,y:V.y,s:V.s,w:bw,h:bh,valid:true});
-  const sw=V.w,sh=V.h;V.w=bw;V.h=bh;
-  try{paintBase(bctx);}finally{V.w=sw;V.h=sh;}
+  // in the middle of a gesture at screen resolution only, and sharp again once the map rests
+  const bw=V.w*(1+2*MARGIN),bh=V.h*(1+2*MARGIN),dpr=moving()?Math.min(V.dpr,1):V.dpr;
+  baseCv.width=Math.round(bw*dpr);baseCv.height=Math.round(bh*dpr);
+  Object.assign(BV,{x:V.x,y:V.y,s:V.s,w:bw,h:bh,valid:true,lo:dpr<V.dpr});
+  const sw=V.w,sh=V.h,sd=V.dpr;V.w=bw;V.h=bh;V.dpr=dpr;
+  try{paintBase(bctx);}finally{V.w=sw;V.h=sh;V.dpr=sd;}
 }
 function paintBase(c){
   c.setTransform(V.dpr,0,0,V.dpr,0,0);
   c.fillStyle=css('--sea');c.fillRect(0,0,V.w,V.h);
   c.lineCap='round';c.lineJoin='round';
-  // land
-  for(const L of LAND){
-    c.beginPath();
-    for(const r of L.rings){r.forEach((p,k)=>{const [x,y]=toScr(p[0],p[1]);k?c.lineTo(x,y):c.moveTo(x,y);});c.closePath();}
-    c.fillStyle=L.code==='BGR'?css('--land'):css('--bg-land');c.fill();
-  }
-  // rivers
-  c.strokeStyle=css('--river');c.lineWidth=Math.max(1.2,Math.min(4,V.s/200));c.beginPath();
-  for(const r of RIVERS)r.forEach((p,k)=>{const [x,y]=toScr(p[0],p[1]);k?c.lineTo(x,y):c.moveTo(x,y);});c.stroke();
-  // border of Bulgaria
+  // land, rivers and the border of Bulgaria
+  LAND.forEach((L,k)=>inWorld(c,()=>{c.fillStyle=L.code==='BGR'?css('--land'):css('--bg-land');c.fill(ringsPath('land'+k,L.rings,true));}));
+  strokeWorld(c,ringsPath('rivers',RIVERS,false),css('--river'),Math.max(1.2,Math.min(4,V.s/200)));
   const bg=LAND.find(l=>l.code==='BGR');
-  if(bg){c.beginPath();for(const r of bg.rings){r.forEach((p,k)=>{const [x,y]=toScr(p[0],p[1]);k?c.lineTo(x,y):c.moveTo(x,y);});c.closePath();}
-    c.strokeStyle=css('--border');c.lineWidth=1.4;c.setLineDash([6,3,1.5,3]);c.stroke();c.setLineDash([]);}
+  if(bg)strokeWorld(c,ringsPath('border',bg.rings,true),css('--border'),1.4,[6,3,1.5,3]);
   // neighbour names
   c.font='italic 500 12px '+css('--f-body');c.fillStyle=css('--muted');c.textAlign='center';
   for(const k in NEIGH){const [n,lo,la]=NEIGH[k];const [x,y]=toScr(lo,la);c.fillText(n.toUpperCase(),x,y);}
   c.fillStyle=css('--river');c.fillText('ЧЕРНО МОРЕ',...toScr(28.6,42.75));c.textAlign='left';
-  // roads with culling
-  const [lon0,lat1]=toWorld(-20,-20),[lon1,lat0]=toWorld(V.w+20,V.h+20);
-  const vis=i=>ebx[4*i+2]>=lon0&&ebx[4*i]<=lon1&&ebx[4*i+3]>=lat0&&ebx[4*i+1]<=lat1;
   const z=Math.max(.55,Math.min(3.2,V.s/150));
-  const showLinks=V.s>900, showIII=true;
+  const showLinks=V.s>900;
   if(S.layer==='live'){
     // muted road network with the live load on top, like a navigation app
-    c.strokeStyle=css('--road-3');c.lineWidth=Math.max(.5,.45*z);c.beginPath();strokeEdges(i=>vis(i)&&eh[i]>=3&&(eh[i]===3||showLinks),c);c.stroke();
-    c.strokeStyle=css('--road-free');c.lineWidth=.9*z;c.beginPath();strokeEdges(i=>vis(i)&&eh[i]<3,c);c.stroke();
-    if(LIVE.eg){const cols=['--tf-0','--tf-1','--tf-2'].map(css);c.lineCap='round';
-      for(let lv=0;lv<3;lv++){c.strokeStyle=cols[lv];c.lineWidth=(1.5+lv*.9)*z;c.beginPath();
-        strokeEdges(i=>LIVE.eg[i]>=0&&vis(i)&&trafLevel(LIVE.groups[LIVE.eg[i]].c1h,eh[i])===lv,c);c.stroke();}
-      c.lineCap='butt';}
+    strokeRoads(c,'minor'+showLinks,i=>eh[i]>=3&&(eh[i]===3||showLinks),css('--road-3'),Math.max(.5,.45*z));
+    strokeRoads(c,'main',i=>eh[i]<3,css('--road-free'),.9*z);
+    if(LIVE.eg){const cols=['--tf-0','--tf-1','--tf-2'].map(css);
+      for(let lv=0;lv<3;lv++)strokeRoads(c,'lv'+lv,i=>LIVE.eg[i]>=0&&trafLevel(LIVE.groups[LIVE.eg[i]].c1h,eh[i])===lv,cols[lv],(1.5+lv*.9)*z);}
   }else if(S.layer!=='traffic'){
-    const layers=[
-      [i=>(eh[i]===3||(eh[i]===4&&showLinks))&&tollCls(i)===3,css('--road-3'),Math.max(.5,.45*z)],
-      [i=>eh[i]<3&&tollCls(i)===3,css('--road-free'),.9*z],
-      [i=>tollCls(i)===2,css('--road-2'),1.0*z],
-      [i=>tollCls(i)===1,css('--road-1'),1.35*z],
-      [i=>tollCls(i)===0,css('--road-am'),2.1*z]];
-    for(const [f,col,w] of layers){if(!showIII&&w<0)continue;c.strokeStyle=col;c.lineWidth=w;c.beginPath();strokeEdges(i=>vis(i)&&f(i),c);c.stroke();}
+    strokeRoads(c,'free3'+showLinks,i=>(eh[i]===3||(eh[i]===4&&showLinks))&&tollCls(i)===3,css('--road-3'),Math.max(.5,.45*z));
+    strokeRoads(c,'freeMain',i=>eh[i]<3&&tollCls(i)===3,css('--road-free'),.9*z);
+    strokeRoads(c,'toll2',i=>tollCls(i)===2,css('--road-2'),1.0*z);
+    strokeRoads(c,'toll1',i=>tollCls(i)===1,css('--road-1'),1.35*z);
+    strokeRoads(c,'toll0',i=>tollCls(i)===0,css('--road-am'),2.1*z);
   }else{
-    c.strokeStyle=css('--road-3');c.lineWidth=.5*z;c.beginPath();strokeEdges(i=>vis(i)&&eseg[i]<0&&eh[i]<4,c);c.stroke();
+    strokeRoads(c,'untolled',i=>eseg[i]<0&&eh[i]<4,css('--road-3'),.5*z);
     const cols=['--t1','--t2','--t3','--t4','--t5','--t6'].map(css);
-    for(let bi=0;bi<6;bi++){c.strokeStyle=cols[bi];c.lineWidth=(1+bi*.5)*z;c.beginPath();
-      strokeEdges(i=>vis(i)&&eseg[i]>=0&&tollCls(i)<3&&tbin(T[eseg[i]][4]/DAYS)===bi,c);c.stroke();}
+    for(let bi=0;bi<6;bi++)strokeRoads(c,'june'+bi,i=>eseg[i]>=0&&tollCls(i)<3&&tbin(T[eseg[i]][4]/DAYS)===bi,cols[bi],(1+bi*.5)*z);
   }
   // roads closed to the chosen vehicle, once zoomed in
-  if(S.obey&&V.s>600&&S.layer==='roads'){c.strokeStyle=css('--bad');c.lineWidth=Math.max(1.5,1.1*z);c.setLineDash([4,4]);c.globalAlpha=.8;c.beginPath();strokeEdges(i=>eRes[i]===1&&vis(i),c);c.stroke();c.setLineDash([]);c.globalAlpha=1;}
-  // incidents: affected roads
-  // closed and banned stretches dashed, roadworks striped, accidents solid
-  for(const x of INC.list){if(!x.active||!x.edges.length)continue;const es=new Set(x.edges),w=Math.max(4,2.4*z);
-    c.beginPath();strokeEdges(i=>es.has(i),c);c.lineCap='round';
-    c.strokeStyle=css('--panel');c.lineWidth=w+3;c.stroke();c.strokeStyle=css(INC_COL[x.type]);c.lineWidth=w;c.stroke();c.lineCap='butt';
-    if(x.type!=='accident'){c.setLineDash(x.type==='works'?[w*.5,w*1.3]:[w*1.4,w]);c.strokeStyle='#fff';c.lineWidth=w*.4;c.stroke();c.setLineDash([]);}}
+  if(S.obey&&V.s>600&&S.layer==='roads'){c.globalAlpha=.8;strokeRoads(c,'res',i=>eRes[i]===1,css('--bad'),Math.max(1.5,1.1*z),[4,4]);c.globalAlpha=1;}
+  // incidents: closed and banned stretches dashed, roadworks striped, accidents solid
+  c.lineCap='round';
+  INC.list.forEach((x,k)=>{if(!x.active||!x.edges.length)return;const es=new Set(x.edges),w=Math.max(4,2.4*z),path=worldPath('inc'+k,i=>es.has(i));
+    strokeWorld(c,path,css('--panel'),w+3);strokeWorld(c,path,css(INC_COL[x.type]),w);
+    if(x.type!=='accident')strokeWorld(c,path,'#fff',w*.4,x.type==='works'?[w*.5,w*1.3]:[w*1.4,w]);});
+  c.lineCap='butt';
 }
-let crispT=0;
-function scheduleCrisp(){clearTimeout(crispT);crispT=setTimeout(()=>{if(ptrs.size||ANIM.raf){scheduleCrisp();return;}BV.valid=false;draw();},180);}
+function scheduleCrisp(){clearTimeout(crispT);crispT=setTimeout(()=>{if(ptrs.size||ANIM.raf||moving()){scheduleCrisp();return;}BV.valid=false;draw();},180);}
 function paint(){
   const c=ctx;cssCache=null;clampView();
+  if(V.x!==PV.x||V.y!==PV.y||V.s!==PV.s){PV.x=V.x;PV.y=V.y;PV.s=V.s;lastMove=performance.now();}
   let k=V.s/BV.s;
-  let need=!BV.valid||k<0.6||k>1.7;
+  // while the map moves the cached bitmap is stretched further before it is redrawn
+  let need=!BV.valid||k<0.6||k>(moving()?3.2:1.7);
   if(!need){const ox=(BV.x-V.x)*V.s,oy=(BV.y-V.y)*V.s,L=V.w/2+ox-BV.w*k/2,Tp=V.h/2+oy-BV.h*k/2;
     if(L>1||Tp>1||L+BV.w*k<V.w-1||Tp+BV.h*k<V.h-1)need=true;}
   if(need)renderBase();
@@ -1033,7 +1038,7 @@ function paint(){
   c.setTransform(V.dpr,0,0,V.dpr,0,0);
   c.fillStyle=css('--sea');c.fillRect(0,0,V.w,V.h);
   c.drawImage(baseCv,V.w/2+ox-BV.w*k/2,V.h/2+oy-BV.h*k/2,BV.w*k,BV.h*k);
-  if(Math.abs(k-1)>0.01)scheduleCrisp();
+  if(Math.abs(k-1)>0.01||BV.lo)scheduleCrisp();
   c.lineCap='round';c.lineJoin='round';
   const [lon0,lat1]=toWorld(-20,-20),[lon1,lat0]=toWorld(V.w+20,V.h+20);
   // routes. With one route chosen the rest of the map fades and only that route is drawn.
@@ -1081,24 +1086,27 @@ function paint(){
         const tx=String(g.c1h);c.strokeText(tx,x,y-r-8);c.fillStyle=css('--ink');c.fillText(tx,x,y-r-8);c.textAlign='left';}
     }
   }
-  // labels with collision grid
-  const occ=new Set();const cell=(x,y)=>Math.floor(x/60)+':'+Math.floor(y/18);
-  const tryLabel=(t,x,y,font,col,dot,shape)=>{
-    const k=cell(x,y),k2=cell(x+40,y);if(occ.has(k)||occ.has(k2))return;occ.add(k);occ.add(k2);
-    c.fillStyle=css('--panel');c.strokeStyle=css('--ink');c.lineWidth=1.2;c.beginPath();
-    if(shape==='sq')c.rect(x-3,y-3,6,6);else c.arc(x,y,dot,0,7);c.fill();c.stroke();
-    c.font=font;c.lineWidth=3;c.strokeStyle=css('--label-halo');c.strokeText(t,x+6,y);c.fillStyle=col;c.fillText(t,x+6,y);
-  };
+  // town labels: in a fixed order of importance, each kept clear of those already placed by its own box,
+  // so moving the map does not change which ones win
+  const placed=new Map(),G=96;
+  const fits=(x0,y0,x1,y1)=>{for(let gx=Math.floor(x0/G);gx<=Math.floor(x1/G);gx++)for(let gy=Math.floor(y0/G);gy<=Math.floor(y1/G);gy++){
+      const a=placed.get(gx*4096+gy);if(a)for(const r of a)if(x0<r[2]&&x1>r[0]&&y0<r[3]&&y1>r[1])return false;}return true;};
+  const put=(x0,y0,x1,y1)=>{const r=[x0,y0,x1,y1];for(let gx=Math.floor(x0/G);gx<=Math.floor(x1/G);gx++)for(let gy=Math.floor(y0/G);gy<=Math.floor(y1/G);gy++){
+      const k=gx*4096+gy;let a=placed.get(k);if(!a)placed.set(k,a=[]);a.push(r);}};
   c.textBaseline='middle';
   const lim=V.s<250?0:V.s<700?1:V.s<1600?1.5:2;
-  const minPop=V.s<250?30000:V.s<700?0:0;
-  for(const p of PL){
+  const FONT=['600 12.5px ','500 11.5px ','400 10.5px '].map(f=>f+css('--f-body')),DOT=[3.6,2.8,2];
+  const halo=css('--label-halo'),ink=css('--ink'),mut=css('--muted'),pan=css('--panel');
+  for(const pi of PL_ORDER){const p=PL[pi];
     if(p.type>lim)continue;if(p.type===2&&V.s<1600)continue;
-    if(p.type===1&&V.s<250&&p.pop<minPop)continue;
+    if(p.type===1&&V.s<250&&p.pop<30000)continue;
     if(p.type===1&&V.s<450&&p.pop<8000)continue;
     if(p.lon<lon0||p.lon>lon1||p.lat<lat0||p.lat>lat1)continue;
-    const [x,y]=toScr(p.lon,p.lat);
-    tryLabel(p.name,x,y,(p.type===0?'600 12.5px ':p.type===1?'500 11.5px ':'400 10.5px ')+css('--f-body'),p.type===2?css('--muted'):css('--ink'),p.type===0?3.6:p.type===1?2.8:2);
+    const [x,y]=toScr(p.lon,p.lat);c.font=FONT[p.type];
+    if(p.w===undefined)p.w=c.measureText(p.name).width;
+    const x0=x-5,y0=y-8,x1=x+9+p.w,y1=y+8;if(!fits(x0,y0,x1,y1))continue;put(x0,y0,x1,y1);
+    c.fillStyle=pan;c.strokeStyle=ink;c.lineWidth=1.2;c.beginPath();c.arc(x,y,DOT[p.type],0,7);c.fill();c.stroke();
+    c.lineWidth=3;c.strokeStyle=halo;c.strokeText(p.name,x+6,y);c.fillStyle=p.type===2?mut:ink;c.fillText(p.name,x+6,y);
   }
   // bubbles: one per route (list), or what is paid on each tolled stretch (chosen route)
   BUBBLES.length=0;
@@ -1495,7 +1503,7 @@ function liveEdges(){
       for(const n of [ea[i],eb[i]])for(let p=nc[n];p<nc[n+1];p++){const j=nl[p];if(!same(j))continue;const d=c0+elen[j];
         if(d<15&&d<(dist.has(j)?dist.get(j):1e9)){dist.set(j,d);q.push([d,j]);}}}
   });
-  LIVE.eg=eg;
+  LIVE.eg=eg;dropPaths('lv');
 }
 function liveTip(g,sx,sy){
   const d=Object.entries(g.dirs).map(([k,v])=>`посока ${k}: <span class="mono">${v}</span>`).join(' · ');
